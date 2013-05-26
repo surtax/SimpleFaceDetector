@@ -1,8 +1,12 @@
 package com.exercise.AndroidCamera;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.util.Random;
 
 import android.app.Activity;
@@ -20,8 +24,11 @@ import android.hardware.Camera.FaceDetectionListener;
 import android.hardware.Camera.PictureCallback;
 import android.hardware.Camera.ShutterCallback;
 import android.net.Uri;
+import android.os.AsyncTask;
 import android.os.Bundle;
+import android.os.Handler;
 import android.provider.MediaStore.Images.Media;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -31,7 +38,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
+public class AndroidCamera extends Activity implements SurfaceHolder.Callback, Camera.PreviewCallback, Runnable{
 
 	Camera camera;
 	SurfaceView surfaceView;
@@ -46,6 +53,8 @@ public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
 	Face[] detectedFaces;
 	
 	final int RESULT_SAVEIMAGE = 0;
+	
+	ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 	
     /** Called when the activity is first created. */
     @Override
@@ -95,6 +104,8 @@ public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
 			}});
         
         prompt = (TextView)findViewById(R.id.prompt);
+        
+        new SocketTask().execute();
     }
     
     FaceDetectionListener faceDetectionListener
@@ -168,8 +179,10 @@ public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
 			}
 
 			camera.startPreview();
+			camera.setPreviewCallback(AndroidCamera.this);
 			camera.startFaceDetection();
 		}};
+	private boolean streaming;
 
 	@Override
 	public void surfaceChanged(SurfaceHolder holder, int format, int width,
@@ -190,6 +203,7 @@ public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
 						"Max Face: " + camera.getParameters().getMaxNumDetectedFaces()));
 				camera.startFaceDetection();
 				previewing = true;
+				
 			} catch (IOException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
@@ -277,4 +291,118 @@ public class AndroidCamera extends Activity implements SurfaceHolder.Callback{
 		}
 		
 	}
-}
+	
+	private DataOutputStream stream;
+	private boolean prepared;
+	private Socket socket;
+
+	
+	private class SocketTask extends AsyncTask {
+
+
+
+		private static final String TAG = "StreamTASK";
+
+		@Override
+		protected Object doInBackground(Object... params) {
+			try
+		    {
+		        ServerSocket server = new ServerSocket(8080);
+
+		        socket = server.accept();
+
+		        server.close();
+
+		        Log.i(TAG, "New connection to :" + socket.getInetAddress());
+
+		        stream = new DataOutputStream(socket.getOutputStream());
+		        prepared = true;
+		        
+		        if (stream != null)
+					{
+					        // send the header
+					    	stream.write(("HTTP/1.0 200 OK\r\n" +
+			                          "Server: iRecon\r\n" +
+			                          "Connection: close\r\n" +
+			                          "Max-Age: 0\r\n" +
+			                          "Expires: 0\r\n" +
+			                          "Cache-Control: no-store, no-cache, must-revalidate, pre-check=0, post-check=0, max-age=0\r\n" +
+			                          "Pragma: no-cache\r\n" + 
+			                          "Content-Type: multipart/x-mixed-replace; " +
+			                          "boundary=" + boundary + "\r\n" +
+			                          "\r\n" +
+			                          "--" + boundary + "\r\n").getBytes());
+
+					        stream.flush();
+
+					        streaming = true;
+					    }
+		    }
+		    catch (IOException e)
+		    {
+		        Log.e(TAG, e.getMessage());
+		    }
+			return null;
+		}
+		
+	}
+	
+	byte[] frame = null;
+	private Handler mHandler;
+
+
+	@Override
+	public void onPreviewFrame(byte[] data, Camera camera)
+	{
+	    frame = data;
+
+	    if (streaming)
+	        mHandler.post(this);
+	}
+	String boundary = boundary = "---------------------------7da24f2e50046";
+
+	@Override
+	public void run()
+	{
+	    // TODO: cache not filling?
+	    try
+	    {
+	        buffer.reset();
+
+//	        switch (imageFormat)
+//	        {
+//	            case ImageFormat.JPEG:
+	                // nothing to do, leave it that way
+	                buffer.write(frame);
+//	                break;
+//
+//	            case ImageFormat.NV16:
+//	            case ImageFormat.NV21:
+//	            case ImageFormat.YUY2:
+//	            case ImageFormat.YV12:
+//	                new YuvImage(frame, imageFormat, w, h, null).compressToJpeg(area, 100, buffer);
+//	                break;
+//
+//	            default:
+//	                throw new IOException("Error while encoding: unsupported image format");
+//	        }
+
+	        buffer.flush();
+
+	        // write the content header
+	        stream.write(("Content-type: image/jpeg\r\n" +
+                    "Content-Length: " + buffer.size() + "\r\n" +
+                    "X-Timestamp:" + System.currentTimeMillis() + "\r\n" +
+                    "\r\n").getBytes());
+
+			buffer.writeTo(stream);
+			stream.write(("\r\n--" + boundary + "\r\n").getBytes());
+			stream.flush();
+			Log.e("WriteStream", "Writing to stream");
+	    }
+	    catch (IOException e)
+	    {
+//	        stop();
+//	        notifyOnEncoderError(this, e.getMessage());
+	    }
+	}}
